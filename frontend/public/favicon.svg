@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="VishRouter">
+  <rect width="32" height="32" rx="8" fill="#007AFF" />
+  <g transform="translate(16 17)">
+    <circle
+      r="6.4"
+      fill="none"
+      stroke="#ffffff"
+      stroke-width="2.5"
+      stroke-linecap="round"
+      stroke-dasharray="30 10.5"
+      transform="rotate(-58)"
+    />
+    <polygon points="0,-9.4 4.4,-3.4 -4.4,-3.4" fill="#ffffff" />
+  </g>
+</svg>

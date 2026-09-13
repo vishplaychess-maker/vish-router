@@ -1,0 +1,234 @@
+@import 'tailwindcss';
+
+/* ==========================================================================
+   VishRouter design system — iOS Human Interface inspired, light theme only.
+
+   Tailwind v4 is configured here in CSS rather than in a JS config file.
+   Every token below becomes a utility: --color-ios-blue gives `bg-ios-blue`,
+   `text-ios-blue`, `border-ios-blue`; --shadow-ios gives `shadow-ios`, etc.
+
+   NOTE: Tailwind v4 refuses `@apply` of a custom class declared in
+   `@layer components` ("Cannot apply unknown utility class"). Shared styling
+   is therefore expressed with comma-separated selector lists, and each class
+   only ever applies genuine Tailwind utilities.
+   ========================================================================== */
+
+@theme {
+  /* --- Brand: iOS system blue ------------------------------------------- */
+  --color-ios-blue: #007aff; /* primary accent */
+  --color-ios-blue-dark: #0062cc; /* pressed / hover */
+  --color-ios-blue-tint: #e9f2ff; /* selected pill, subtle fills */
+  --color-ios-blue-ring: #b3d7ff; /* focus ring */
+
+  /* --- Surfaces ---------------------------------------------------------- */
+  --color-ios-bg: #f2f2f7; /* iOS systemGroupedBackground */
+  --color-ios-surface: #ffffff; /* cards, navbar, table rows */
+  --color-ios-fill: #f2f2f7; /* search field, AI bubble */
+  --color-ios-fill-strong: #e5e5ea; /* pressed fill / darker bubble */
+
+  /* --- Text -------------------------------------------------------------- */
+  --color-ios-label: #1c1c1e; /* primary label */
+  --color-ios-label-secondary: #8e8e93; /* subtitles, captions */
+  --color-ios-label-tertiary: #c7c7cc; /* placeholders, disabled */
+
+  /* --- Lines ------------------------------------------------------------- */
+  --color-ios-separator: #e5e5ea; /* hairlines, table borders */
+
+  /* --- Semantic accents -------------------------------------------------- */
+  --color-ios-green: #34c759;
+  --color-ios-red: #ff3b30;
+  --color-ios-orange: #ff9500;
+  --color-ios-purple: #af52de;
+  --color-ios-teal: #5ac8fa;
+
+  /* --- Typography -------------------------------------------------------- */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'SF Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* --- Corner radii ------------------------------------------------------ */
+  --radius-ios-sm: 0.625rem; /*  10px — inputs, small chips   */
+  --radius-ios: 0.875rem; /*  14px — buttons, list rows    */
+  --radius-ios-lg: 1.25rem; /*  20px — cards                 */
+  --radius-ios-xl: 1.75rem; /*  28px — sheets, chat bubbles  */
+
+  /* --- Shadows: soft and diffused, never harsh --------------------------- */
+  --shadow-ios-xs: 0 1px 2px rgb(0 0 0 / 0.04);
+  --shadow-ios-sm: 0 1px 3px rgb(0 0 0 / 0.04), 0 1px 2px rgb(0 0 0 / 0.03);
+  --shadow-ios: 0 4px 16px rgb(0 0 0 / 0.06), 0 1px 3px rgb(0 0 0 / 0.04);
+  --shadow-ios-lg: 0 12px 32px rgb(0 0 0 / 0.08), 0 2px 8px rgb(0 0 0 / 0.04);
+
+  /* --- Motion: iOS uses short, eased transitions ------------------------- */
+  --ease-ios: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* ==========================================================================
+   Base
+   ========================================================================== */
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background-color: var(--color-ios-bg);
+    color: var(--color-ios-label);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* iOS keeps focus rings visible but soft, and never on mouse click. */
+  :focus-visible {
+    outline: 2px solid var(--color-ios-blue);
+    outline-offset: 2px;
+  }
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  /* Slim, unobtrusive scrollbars in the iOS spirit. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-ios-label-tertiary) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: var(--color-ios-label-tertiary);
+    border-radius: 9999px;
+  }
+}
+
+/* ==========================================================================
+   Components — the recurring iOS patterns from the PRD, defined once so the
+   pages stay declarative.
+   ========================================================================== */
+
+@layer components {
+  /* --- Card: white, generously rounded, soft shadow ---------------------- */
+  .ios-card {
+    @apply rounded-ios-lg border border-ios-separator bg-ios-surface shadow-ios;
+  }
+
+  /* --- Buttons ----------------------------------------------------------- */
+  .ios-btn,
+  .ios-btn-primary,
+  .ios-btn-secondary {
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-full px-5 py-2 text-sm
+           font-semibold transition-all duration-200 ease-ios select-none
+           disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  .ios-btn-primary {
+    @apply bg-ios-blue text-white shadow-ios-sm hover:bg-ios-blue-dark active:scale-[0.97];
+  }
+
+  .ios-btn-secondary {
+    @apply border border-ios-separator bg-ios-surface text-ios-label hover:bg-ios-fill active:scale-[0.97];
+  }
+
+  /* --- Form controls ----------------------------------------------------- */
+
+  /* Spotlight-style search field: fully rounded, filled, no visible border. */
+  .ios-search {
+    @apply w-full rounded-full border border-transparent bg-ios-fill py-2.5 pr-4 pl-11 text-sm
+           text-ios-label transition-all duration-200 ease-ios outline-none
+           placeholder:text-ios-label-secondary
+           focus:border-ios-blue-ring focus:bg-ios-surface focus:shadow-ios-sm;
+  }
+
+  .ios-input {
+    @apply w-full rounded-ios border border-ios-separator bg-ios-surface px-4 py-2.5 text-sm
+           text-ios-label outline-none transition-all duration-200 ease-ios
+           placeholder:text-ios-label-tertiary
+           focus:border-ios-blue focus:ring-2 focus:ring-ios-blue-ring;
+  }
+
+  /* --- Segmented control (iOS UISegmentedControl) ------------------------ */
+  .ios-segment {
+    @apply inline-flex items-center gap-1 rounded-ios bg-ios-fill p-1;
+  }
+
+  .ios-segment-item,
+  .ios-segment-item-active {
+    @apply cursor-pointer rounded-[10px] px-4 py-1.5 text-sm font-medium transition-all
+           duration-200 ease-ios select-none;
+  }
+
+  .ios-segment-item {
+    @apply text-ios-label-secondary hover:text-ios-label;
+  }
+
+  .ios-segment-item-active {
+    @apply bg-ios-blue text-white shadow-ios-sm hover:text-white;
+  }
+
+  /* --- Navigation pill --------------------------------------------------- */
+  .ios-nav-link,
+  .ios-nav-link-active {
+    @apply rounded-full px-3.5 py-1.5 text-[13px] font-semibold tracking-wide transition-all
+           duration-200 ease-ios;
+  }
+
+  .ios-nav-link {
+    @apply text-ios-label-secondary hover:text-ios-label;
+  }
+
+  .ios-nav-link-active {
+    @apply bg-ios-blue-tint text-ios-blue hover:text-ios-blue;
+  }
+
+  /* --- iOS switch (used for the Streaming toggle) ------------------------ */
+  .ios-switch,
+  .ios-switch-on,
+  .ios-switch-off {
+    @apply relative inline-flex h-[31px] w-[51px] shrink-0 cursor-pointer items-center rounded-full
+           border-none transition-colors duration-300 ease-ios;
+  }
+
+  .ios-switch-on {
+    @apply bg-ios-green;
+  }
+
+  .ios-switch-off {
+    @apply bg-ios-label-tertiary;
+  }
+
+  .ios-switch-knob {
+    @apply pointer-events-none inline-block h-[27px] w-[27px] rounded-full bg-white shadow-ios-sm
+           transition-transform duration-300 ease-ios;
+  }
+
+  /* --- iMessage bubbles --------------------------------------------------
+     The "tail" is faked the iOS way: three corners keep the full radius and
+     the corner nearest the speaker is squared off, like a real chat bubble. */
+  .ios-bubble,
+  .ios-bubble-user,
+  .ios-bubble-ai {
+    @apply max-w-[75%] px-4 py-2.5 text-[15px] leading-relaxed break-words whitespace-pre-wrap;
+  }
+
+  .ios-bubble-user {
+    @apply rounded-ios-xl rounded-br-md bg-ios-blue text-white;
+  }
+
+  .ios-bubble-ai {
+    @apply rounded-ios-xl rounded-bl-md bg-ios-fill-strong text-ios-label;
+  }
+
+  /* --- Small metadata chip ----------------------------------------------- */
+  .ios-chip {
+    @apply inline-flex items-center gap-1.5 rounded-full bg-ios-fill px-2.5 py-1 text-[11px]
+           font-medium text-ios-label-secondary;
+  }
+}

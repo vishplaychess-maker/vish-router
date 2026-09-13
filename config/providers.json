@@ -1,0 +1,144 @@
+{
+  "_comment": "VishRouter provider registry. Routing: exact match on `models`, then prefix match on `modelPrefixes`, then `fallbackOrder` decides the retry sequence. A provider whose `apiKeyEnv` variable is empty/missing is treated as unavailable and skipped.",
+
+  "defaults": {
+    "timeoutMs": 60000,
+    "streamTimeoutMs": 120000,
+    "maxTokensWhenUnspecified": 4096,
+    "allowCrossProviderFallback": true,
+    "fallbackOn": {
+      "statuses": [408, 409, 429, 500, 502, 503, 504, 529],
+      "networkErrors": true,
+      "timeouts": true
+    }
+  },
+
+  "providers": {
+    "openai": {
+      "enabled": true,
+      "label": "OpenAI",
+      "adapter": "openai-compatible",
+      "baseUrl": "https://api.openai.com/v1",
+      "path": "/chat/completions",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "auth": {
+        "type": "bearer"
+      },
+      "defaultModel": "gpt-4o-mini",
+      "models": [
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4-turbo",
+        "gpt-3.5-turbo"
+      ],
+      "modelPrefixes": [
+        "gpt-",
+        "o1",
+        "o3",
+        "chatgpt-"
+      ],
+      "supportsStreaming": true,
+      "timeoutMs": 60000
+    },
+
+    "anthropic": {
+      "enabled": true,
+      "label": "Anthropic",
+      "adapter": "anthropic",
+      "baseUrl": "https://api.anthropic.com/v1",
+      "path": "/messages",
+      "apiKeyEnv": "ANTHROPIC_API_KEY",
+      "auth": {
+        "type": "x-api-key"
+      },
+      "headers": {
+        "anthropic-version": "2023-06-01"
+      },
+      "defaultModel": "claude-3-5-haiku-20241022",
+      "models": [
+        "claude-3-5-sonnet-20241022",
+        "claude-3-5-haiku-20241022",
+        "claude-3-opus-20240229"
+      ],
+      "modelPrefixes": [
+        "claude-"
+      ],
+      "maxTokensWhenUnspecified": 4096,
+      "supportsStreaming": true,
+      "timeoutMs": 60000
+    },
+
+    "deepseek": {
+      "enabled": true,
+      "label": "DeepSeek",
+      "adapter": "openai-compatible",
+      "baseUrl": "https://api.deepseek.com/v1",
+      "path": "/chat/completions",
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "auth": {
+        "type": "bearer"
+      },
+      "defaultModel": "deepseek-chat",
+      "models": [
+        "deepseek-chat",
+        "deepseek-reasoner"
+      ],
+      "modelPrefixes": [
+        "deepseek-"
+      ],
+      "supportsStreaming": true,
+      "timeoutMs": 60000
+    }
+  },
+
+  "modelEquivalents": {
+    "_comment": "Capability-equivalent model per provider. When the router falls back to a provider that does not natively serve the requested model, it looks the model up here first; if there is no entry it falls back to that provider's `defaultModel`. Add your own models freely — the keys are the model names clients may request.",
+
+    "gpt-3.5-turbo": {
+      "openai": "gpt-3.5-turbo",
+      "deepseek": "deepseek-chat",
+      "anthropic": "claude-3-5-haiku-20241022"
+    },
+    "gpt-4o-mini": {
+      "openai": "gpt-4o-mini",
+      "deepseek": "deepseek-chat",
+      "anthropic": "claude-3-5-haiku-20241022"
+    },
+    "gpt-4o": {
+      "openai": "gpt-4o",
+      "deepseek": "deepseek-reasoner",
+      "anthropic": "claude-3-5-sonnet-20241022"
+    },
+    "deepseek-chat": {
+      "openai": "gpt-4o-mini",
+      "deepseek": "deepseek-chat",
+      "anthropic": "claude-3-5-haiku-20241022"
+    },
+    "deepseek-reasoner": {
+      "openai": "gpt-4o",
+      "deepseek": "deepseek-reasoner",
+      "anthropic": "claude-3-5-sonnet-20241022"
+    },
+    "claude-3-5-haiku-20241022": {
+      "openai": "gpt-4o-mini",
+      "deepseek": "deepseek-chat",
+      "anthropic": "claude-3-5-haiku-20241022"
+    },
+    "claude-3-5-sonnet-20241022": {
+      "openai": "gpt-4o",
+      "deepseek": "deepseek-reasoner",
+      "anthropic": "claude-3-5-sonnet-20241022"
+    },
+    "claude-3-opus-20240229": {
+      "openai": "gpt-4o",
+      "deepseek": "deepseek-reasoner",
+      "anthropic": "claude-3-opus-20240229"
+    }
+  },
+
+  "fallbackOrder": [
+    "openai",
+    "deepseek",
+    "anthropic"
+  ]
+}

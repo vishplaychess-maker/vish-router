@@ -1,0 +1,31 @@
+{
+  "name": "vish-router",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lightweight AI gateway exposing one OpenAI-compatible API that routes to OpenAI, Anthropic and DeepSeek with automatic fallback and SSE streaming.",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "smoke": "node test/smoke.mjs",
+    "smoke:live": "node test/smoke.mjs --live",
+    "test": "node test/smoke.mjs"
+  },
+  "keywords": [
+    "llm",
+    "gateway",
+    "router",
+    "openai-compatible",
+    "sse"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1"
+  }
+}
