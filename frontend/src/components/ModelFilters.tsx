@@ -1,14 +1,7 @@
 import type { ReactNode } from 'react'
 import FilterCheckbox from './FilterCheckbox'
 import { tierOf, type Modality, type ModelRow, type PricingTier } from '../lib/modelCatalog'
-
-export interface FilterState {
-  modalities: Modality[]
-  toolsOnly: boolean
-  tiers: PricingTier[]
-}
-
-export const EMPTY_FILTERS: FilterState = { modalities: [], toolsOnly: false, tiers: [] }
+import type { FilterState } from '../lib/filters'
 
 const MODALITY_LABELS: Record<Modality, string> = { text: 'Text', image: 'Image' }
 const TIER_OPTIONS: { tier: PricingTier; label: string }[] = [

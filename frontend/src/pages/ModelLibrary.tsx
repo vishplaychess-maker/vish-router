@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { AlertCircle, ChevronRight, Search } from 'lucide-react'
 
-import ModelFilters, { EMPTY_FILTERS, type FilterState } from '../components/ModelFilters'
+import ModelFilters from '../components/ModelFilters'
 import SegmentedControl from '../components/SegmentedControl'
+import { EMPTY_FILTERS, type FilterState } from '../lib/filters'
 import { fetchModels } from '../lib/api'
 import {
   PROVIDER_COLOR,
@@ -54,8 +55,10 @@ export default function ModelLibrary() {
 
   useEffect(() => {
     const controller = new AbortController()
-    setStatus('loading')
 
+    // `status` starts as 'loading' and the retry handler resets it, so there is
+    // deliberately no setState here — calling it in an effect would trigger a
+    // cascading render for no benefit.
     fetchModels(controller.signal)
       .then((models) => {
         setRows(models.map(toModelRow))
@@ -173,7 +176,10 @@ export default function ModelLibrary() {
               <button
                 type="button"
                 className="ios-btn-primary mt-1"
-                onClick={() => setAttempt((value) => value + 1)}
+                onClick={() => {
+                  setStatus('loading')
+                  setAttempt((value) => value + 1)
+                }}
               >
                 Try again
               </button>
