@@ -11,7 +11,7 @@
  *              `usage.input_tokens/output_tokens` become prompt/completion.
  */
 
-import { ProviderError, nowSeconds, trimSlash } from './common.js';
+import { ProviderError, UPSTREAM_CODES, nowSeconds, trimSlash } from './common.js';
 
 export const name = 'anthropic';
 
@@ -212,10 +212,13 @@ export function translateStreamEvent({ event, data, model, requestedModel, state
     }
 
     case 'error':
-      throw new ProviderError(`anthropic stream error — ${payload.error?.message ?? 'unknown'}`, {
+      // The upstream error payload is untrusted input. Classify it and never
+      // echo its message or body: this frame can surface to a client when the
+      // failure happens after the stream has already committed.
+      throw new ProviderError(`${name} upstream reported a stream error.`, {
         provider: name,
+        code: UPSTREAM_CODES.STREAM_ERROR,
         retryable: false,
-        upstream: trimmed.slice(0, 2000),
       });
 
     default:

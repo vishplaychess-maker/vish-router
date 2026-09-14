@@ -13,6 +13,7 @@
 import express from 'express';
 import { once } from 'node:events';
 import { errorTypeFor, sendError } from '../http/errors.js';
+import { ProviderError } from '../services/adapters/index.js';
 import {
   routeChatCompletion,
   streamChatCompletion,
@@ -23,6 +24,25 @@ import {
 const router = express.Router();
 
 export { errorTypeFor, sendError } from '../http/errors.js';
+
+// ---------------------------------------------------------- public error text
+
+/**
+ * Only errors this gateway constructs itself may carry their message to a
+ * client. Anything else — a TypeError, a Node internal, a library error — is
+ * replaced with a generic message, so neither internal detail nor upstream
+ * text can escape through an unexpected failure.
+ *
+ * ProviderError messages are safe by construction: `adapters/common.js` builds
+ * them exclusively from the provider name, a normalized status and a normalized
+ * category, and never from an upstream body.
+ */
+function publicMessage(error, status) {
+  if (error instanceof ProviderError && typeof error.message === 'string' && error.message) {
+    return error.message;
+  }
+  return status >= 500 ? 'Internal server error.' : 'Request failed.';
+}
 
 // -------------------------------------------------------------- validation
 
@@ -212,7 +232,7 @@ async function handleStreaming(req, res, body) {
       if (error.attempts) extra.provider_attempts = error.attempts;
       sendError(res, {
         status: error.status ?? 502,
-        message: error.message,
+        message: publicMessage(error, error.status ?? 502),
         code: error.code ?? null,
         extra,
       });
@@ -225,9 +245,11 @@ async function handleStreaming(req, res, body) {
     res.write(
       `data: ${JSON.stringify({
         error: {
-          message: error.message,
+          // Stable and generic: once bytes are on the wire the client cannot be
+          // failed over, and no upstream detail may be attached to the frame.
+          message: 'The upstream stream failed before it completed.',
           type: errorTypeFor(error.status ?? 502),
-          code: error.code ?? 'upstream_stream_error',
+          code: 'upstream_stream_error',
           param: null,
         },
       })}\n\n`
@@ -322,7 +344,7 @@ router.post('/v1/chat/completions', async (req, res) => {
 
     sendError(res, {
       status: error.status ?? 502,
-      message: error.message,
+      message: publicMessage(error, error.status ?? 502),
       code: error.code ?? null,
       extra,
     });

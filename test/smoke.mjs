@@ -28,6 +28,19 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LIVE = process.argv.includes('--live');
 const CLIENT_API_KEY = 'vr_test_0123456789abcdef0123456789abcdef';
 
+/**
+ * Second key with its own rate-limit bucket. The "Usage and quota" section
+ * deliberately exhausts the first key's budget, so the sanitization checks run
+ * on this key to stay independent of section ordering.
+ */
+const SECOND_API_KEY = 'vr_test_fedcba9876543210fedcba9876543210';
+
+/**
+ * Planted in upstream error bodies (JSON and plain text) and in an upstream SSE
+ * error event. It must never appear anywhere a client can read.
+ */
+const UPSTREAM_MARKER = 'UPSTREAM_SECRET_MARKER_DO_NOT_EXPOSE';
+
 // ------------------------------------------------------------ tiny reporter
 
 const results = [];
@@ -88,6 +101,25 @@ const sse = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 const openAiShaped = (name, label) => (req, res, body) => {
   const behaviour = mode[name];
 
+  // Upstream bodies carrying a marker that must never reach a client.
+  if (behaviour === 'marker-json') {
+    res.writeHead(429, { 'content-type': 'application/json' });
+    return res.end(
+      JSON.stringify({
+        error: { message: `${UPSTREAM_MARKER} json body`, type: 'rate_limit_error' },
+      })
+    );
+  }
+  if (behaviour === 'marker-text') {
+    // Plain text, not JSON: exercises the non-JSON upstream body path.
+    res.writeHead(500, { 'content-type': 'text/plain' });
+    return res.end(`${UPSTREAM_MARKER} plain text body`);
+  }
+  if (behaviour === 'marker-400') {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify({ error: { message: `${UPSTREAM_MARKER} bad request` } }));
+  }
+
   if (behaviour === '429') {
     res.writeHead(429, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ error: { message: `${label} simulated rate limit`, type: 'rate_limit_error' } }));
@@ -139,9 +171,32 @@ const anthropicShaped = (req, res, body) => {
     return res.end(JSON.stringify({ error: { message: 'Anthropic simulated rate limit' } }));
   }
 
+  // Marked JSON error body, matching the OpenAI-shaped mock's marker mode.
+  if (mode.anthropic === 'marker-json') {
+    res.writeHead(429, { 'content-type': 'application/json' });
+    return res.end(
+      JSON.stringify({
+        error: { type: 'overloaded_error', message: `${UPSTREAM_MARKER} anthropic body` },
+      })
+    );
+  }
+
   if (body.stream) {
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     const event = (name, data) => res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+
+    if (mode.anthropic === 'marker-stream') {
+      // Commits the stream, then fails mid-flight with a marked error payload,
+      // so the failure can only travel as an in-band SSE error frame.
+      event('message_start', { message: { id: 'msg_1', model: body.model, usage: { input_tokens: 5 } } });
+      event('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'Partial ' } });
+      event('error', {
+        type: 'error',
+        error: { type: 'overloaded_error', message: `${UPSTREAM_MARKER} stream detail` },
+      });
+      return res.end();
+    }
+
     event('message_start', { message: { id: 'msg_1', model: body.model, usage: { input_tokens: 5 } } });
     event('content_block_start', { index: 0, content_block: { type: 'text', text: '' } });
     event('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'Hello ' } });
@@ -208,12 +263,12 @@ async function spawnGateway(env = {}) {
 
 // -------------------------------------------------------------- http helpers
 
-const postJson = (base, payload) =>
+const postJson = (base, payload, key = CLIENT_API_KEY) =>
   fetch(`${base}/v1/chat/completions`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      authorization: `Bearer ${CLIENT_API_KEY}`,
+      authorization: `Bearer ${key}`,
     },
     body: typeof payload === 'string' ? payload : JSON.stringify(payload),
   });
@@ -298,7 +353,7 @@ async function offlineSuite() {
       DEEPSEEK_API_KEY: 'smoke-deepseek',
       ANTHROPIC_API_KEY: 'smoke-anthropic',
       VISHROUTER_AUTH_MODE: 'required',
-      VISHROUTER_API_KEYS: `smoke:${CLIENT_API_KEY}`,
+      VISHROUTER_API_KEYS: `smoke:${CLIENT_API_KEY},smoke2:${SECOND_API_KEY}`,
       RATE_LIMIT_REQUESTS_PER_MINUTE: '12',
     });
 
@@ -312,7 +367,10 @@ async function offlineSuite() {
     equal('all three providers available', health.available_providers, 3);
     equal('fallback order echoed by health', health.fallback_order, ['openai', 'deepseek', 'anthropic']);
     equal('health reports required client auth', health.gateway_security.client_auth, 'required');
-    equal('health reports configured client keys without exposing them', health.gateway_security.configured_client_keys, 1);
+    // Two keys are configured: the primary `smoke` key plus `smoke2`, which the
+    // sanitization section uses so it is not blocked by the primary key's
+    // exhausted rate-limit bucket.
+    equal('health reports configured client keys without exposing them', health.gateway_security.configured_client_keys, 2);
 
     const models = await (await fetch(`${gateway.base}/v1/models`)).json();
     const modelIds = models.data.map((m) => m.id);
@@ -490,6 +548,94 @@ async function offlineSuite() {
       equal('rate-limit error code', limitedBody.error.code, 'rate_limit_exceeded');
       equal('rate-limit remaining reaches zero', limited.headers.get('x-ratelimit-remaining-requests'), '0');
       check('retry-after is returned', Number(limited.headers.get('retry-after')) > 0);
+    }
+
+    section('Upstream error sanitization');
+    {
+      // Runs on its own key because the previous section exhausts the first
+      // key's rate-limit budget, and these checks need real provider attempts.
+      const askAs = (payload) => postJson(gateway.base, payload, SECOND_API_KEY);
+      const hasMarker = (value) => JSON.stringify(value ?? null).includes(UPSTREAM_MARKER);
+
+      // 1. Successful fallback: openai fails with a marked JSON body, deepseek serves.
+      mode.openai = 'marker-json';
+      mode.deepseek = 'ok';
+      const fallback = await askAs(message('gpt-4o-mini'));
+      const fallbackBody = await fallback.json();
+      equal('marker case: fallback still succeeds', fallback.status, 200);
+      check('marker absent from the fallback response body', !hasMarker(fallbackBody), 'marker leaked into the success response');
+      check('marker absent from fallback response headers', ![...fallback.headers].flat().join(' ').includes(UPSTREAM_MARKER), 'marker leaked into headers');
+      check('marker absent from x_vishrouter.attempts', !hasMarker(fallbackBody.x_vishrouter?.attempts), JSON.stringify(fallbackBody.x_vishrouter?.attempts));
+
+      const attempts = fallbackBody.x_vishrouter?.attempts ?? [];
+      equal('failed attempt keeps the provider name', attempts[0]?.provider, 'openai');
+      equal('failed attempt keeps success/failure', attempts[0]?.ok, false);
+      equal('failed attempt keeps normalized status', attempts[0]?.status, 429);
+      equal('failed attempt keeps normalized code', attempts[0]?.code, 'upstream_rate_limited');
+      equal('failed attempt keeps retryable', attempts[0]?.retryable, true);
+      check('failed attempt keeps a numeric duration', Number.isFinite(attempts[0]?.durationMs), JSON.stringify(attempts[0]));
+      equal('attempt metadata exposes only safe fields', Object.keys(attempts[0]).sort(), ['code', 'durationMs', 'ok', 'provider', 'retryable', 'status']);
+
+      // 2. Every provider fails: JSON bodies on two, a plain-text body on one.
+      mode.openai = 'marker-json';
+      mode.deepseek = 'marker-text';
+      mode.anthropic = 'marker-json';
+      const failed = await askAs(message('gpt-4o-mini'));
+      const failedBody = await failed.json();
+      equal('marker case: outage surfaces the real status', failed.status, 429);
+      check('marker absent from the all-providers-failed response', !hasMarker(failedBody), 'marker leaked into the error response');
+      equal('exhausted error code is stable', failedBody.error.code, 'all_providers_failed');
+      check(
+        'exhausted message is generic and stable',
+        /^All \d+ provider attempt\(s\) failed for model "gpt-4o-mini"\.$/.test(failedBody.error.message),
+        failedBody.error.message
+      );
+
+      const providerAttempts = failedBody.error.provider_attempts ?? [];
+      equal('every attempt is reported', providerAttempts.length, 3);
+      check('marker absent from every provider_attempts entry', !hasMarker(providerAttempts), JSON.stringify(providerAttempts));
+      equal('no attempt carries a free-text error field', providerAttempts.every((a) => !('error' in a)), true);
+      equal('plain-text upstream body maps to a normalized status', providerAttempts[1]?.status, 500);
+      equal('plain-text upstream body maps to a normalized code', providerAttempts[1]?.code, 'upstream_unavailable');
+      equal('attempt metadata exposes only safe fields on failure', Object.keys(providerAttempts[0]).sort(), ['code', 'durationMs', 'ok', 'provider', 'retryable', 'status']);
+
+      // 3. Pre-commit streaming failure must stay JSON, not SSE.
+      mode.openai = 'marker-json';
+      mode.deepseek = 'marker-json';
+      mode.anthropic = 'marker-json';
+      const preCommit = await askAs(message('gpt-4o-mini', { stream: true }));
+      const preCommitBody = await preCommit.json();
+      check('pre-commit stream failure is not an event stream', !preCommit.headers.get('content-type')?.includes('event-stream'), 'unexpected SSE');
+      equal('pre-commit stream failure keeps the real status', preCommit.status, 429);
+      check('marker absent from the pre-commit failure response', !hasMarker(preCommitBody), 'marker leaked into the pre-commit error');
+      mode.openai = 'ok';
+      mode.deepseek = 'ok';
+      mode.anthropic = 'ok';
+
+      // 4. Mid-stream SSE error frame, after the stream has already committed.
+      mode.openai = '429';
+      mode.deepseek = '429';
+      mode.anthropic = 'marker-stream';
+      const midStream = await askAs(message('gpt-3.5-turbo', { stream: true }));
+      const midFrames = await readSSE(midStream);
+      check('marker absent from every SSE frame', !midFrames.join('').includes(UPSTREAM_MARKER), midFrames.join(' | '));
+      const frame = chunksOf(midFrames).find((c) => c.error);
+      check('mid-stream error frame is delivered', Boolean(frame), 'no error frame seen');
+      equal('mid-stream frame uses a stable generic code', frame?.error?.code, 'upstream_stream_error');
+      equal('mid-stream frame uses a stable generic message', frame?.error?.message, 'The upstream stream failed before it completed.');
+      equal('mid-stream stream still terminates cleanly', midFrames.at(-1), '[DONE]');
+      mode.openai = 'ok';
+      mode.deepseek = 'ok';
+      mode.anthropic = 'ok';
+
+      // 5. A non-retryable upstream 400 must be sanitized too.
+      mode.openai = 'marker-400';
+      const bad = await askAs(message('gpt-4o-mini'));
+      const badBody = await bad.json();
+      equal('marker case: upstream 400 surfaces its status', bad.status, 400);
+      check('marker absent from the upstream 400 response', !hasMarker(badBody), 'marker leaked into the 400 response');
+      equal('upstream 400 maps to a normalized code', badBody.error.provider_attempts?.[0]?.code, 'upstream_rejected_request');
+      mode.openai = 'ok';
     }
   } finally {
     if (gateway) {
