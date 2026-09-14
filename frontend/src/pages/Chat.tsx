@@ -234,6 +234,11 @@ export default function Chat() {
                   restart the gateway.
                 </p>
               )}
+              {banner.code === 'invalid_api_key' && (
+                <p className="mt-1 text-xs text-ios-label-secondary">
+                  Use the <strong>API KEY</strong> button in the navigation bar to connect this tab.
+                </p>
+              )}
             </div>
           </div>
         )}

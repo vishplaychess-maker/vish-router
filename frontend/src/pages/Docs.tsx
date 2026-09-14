@@ -195,6 +195,7 @@ export default function Docs() {
                 rows={[
                   ['POST /v1/chat/completions', 'Chat completion, streaming or buffered'],
                   ['GET /v1/models', 'Models available for routing'],
+                  ['GET /v1/usage', 'Usage summary for the authenticated key'],
                   ['GET /health', 'Liveness and per-provider readiness'],
                 ]}
               />
@@ -204,9 +205,9 @@ export default function Docs() {
             </Section>
 
             <Section id="quick-start" title="Quick start">
-              <p>Install, add at least one provider key, and start the gateway.</p>
+              <p>Install, create a VishRouter client key, add a provider key, and start the gateway.</p>
               <CodeBlock
-                code={`npm install\ncp .env.example .env      # add OPENAI_API_KEY / ANTHROPIC_API_KEY / DEEPSEEK_API_KEY\nnpm start                 # listening on http://127.0.0.1:3000`}
+                code={`npm install\ncp .env.example .env\nopenssl rand -hex 32       # put this in VISHROUTER_API_KEYS=local:<key>\n# add OPENAI_API_KEY / ANTHROPIC_API_KEY / DEEPSEEK_API_KEY\nnpm start                 # listening on http://127.0.0.1:3000`}
               />
               <p>
                 Any OpenAI SDK can be pointed at it by changing the base URL — no other client
@@ -214,7 +215,7 @@ export default function Docs() {
               </p>
               <CodeBlock
                 label="node"
-                code={`import OpenAI from 'openai'\n\nconst client = new OpenAI({\n  baseURL: '${API_BASE_URL}/v1',\n  apiKey: 'not-needed-locally',\n})\n\nconst reply = await client.chat.completions.create({\n  model: 'gpt-3.5-turbo',\n  messages: [{ role: 'user', content: 'Hello' }],\n})`}
+                code={`import OpenAI from 'openai'\n\nconst client = new OpenAI({\n  baseURL: '${API_BASE_URL}/v1',\n  apiKey: process.env.VISHROUTER_API_KEY,\n})\n\nconst reply = await client.chat.completions.create({\n  model: 'gpt-3.5-turbo',\n  messages: [{ role: 'user', content: 'Hello' }],\n})`}
               />
             </Section>
 
@@ -225,14 +226,14 @@ export default function Docs() {
                 can run with only one key configured.
               </p>
               <Callout>
-                The local gateway does not authenticate callers. Do not expose it to the public
-                internet without putting an authenticating proxy in front of it.
+                Chat and usage endpoints require a VishRouter bearer key by default. The dashboard
+                keeps the key only in sessionStorage, so use the API KEY button once per tab session.
               </Callout>
             </Section>
 
             <Section id="chat-completions" title="Chat completions">
               <CodeBlock
-                code={`curl ${API_BASE_URL}/v1/chat/completions \\\n  -H 'content-type: application/json' \\\n  -d '{\n    "model": "gpt-3.5-turbo",\n    "messages": [{ "role": "user", "content": "Hello" }]\n  }'`}
+                code={`curl ${API_BASE_URL}/v1/chat/completions \\\n  -H 'authorization: Bearer YOUR_VISHROUTER_KEY' \\\n  -H 'content-type: application/json' \\\n  -d '{\n    "model": "gpt-3.5-turbo",\n    "messages": [{ "role": "user", "content": "Hello" }]\n  }'`}
               />
               <RefTable
                 head={['Field', 'Type', 'Notes']}
@@ -252,7 +253,7 @@ export default function Docs() {
                 format, terminated by <Code>data: [DONE]</Code>.
               </p>
               <CodeBlock
-                code={`curl -N ${API_BASE_URL}/v1/chat/completions \\\n  -H 'content-type: application/json' \\\n  -d '{\n    "model": "gpt-3.5-turbo",\n    "messages": [{ "role": "user", "content": "Count to three" }],\n    "stream": true\n  }'`}
+                code={`curl -N ${API_BASE_URL}/v1/chat/completions \\\n  -H 'authorization: Bearer YOUR_VISHROUTER_KEY' \\\n  -H 'content-type: application/json' \\\n  -d '{\n    "model": "gpt-3.5-turbo",\n    "messages": [{ "role": "user", "content": "Count to three" }],\n    "stream": true\n  }'`}
               />
               <p>
                 Failover only happens <em>before</em> the first byte. If every provider fails

@@ -1,5 +1,13 @@
+import { useEffect, useState, type FormEvent } from 'react'
 import { Link, NavLink } from 'react-router-dom'
-import { Bell, RotateCw } from 'lucide-react'
+import { Bell, KeyRound, LogOut, RotateCw, X } from 'lucide-react'
+
+import {
+  API_KEY_CHANGED_EVENT,
+  clearApiKey,
+  getApiKey,
+  setApiKey,
+} from '../lib/apiKey'
 
 /**
  * Top navigation (PRD §4.1).
@@ -22,7 +30,26 @@ function navLinkClasses({ isActive }: { isActive: boolean }): string {
 }
 
 export default function Navbar() {
+  const [hasApiKey, setHasApiKey] = useState(() => Boolean(getApiKey()))
+  const [showKeyDialog, setShowKeyDialog] = useState(false)
+  const [draftKey, setDraftKey] = useState('')
+
+  useEffect(() => {
+    const sync = () => setHasApiKey(Boolean(getApiKey()))
+    window.addEventListener(API_KEY_CHANGED_EVENT, sync)
+    return () => window.removeEventListener(API_KEY_CHANGED_EVENT, sync)
+  }, [])
+
+  const saveKey = (event: FormEvent) => {
+    event.preventDefault()
+    if (!draftKey.trim()) return
+    setApiKey(draftKey)
+    setDraftKey('')
+    setShowKeyDialog(false)
+  }
+
   return (
+    <>
     <header className="sticky top-0 z-20 border-b border-ios-separator bg-ios-surface/90 backdrop-blur-xl">
       <div className="mx-auto max-w-6xl px-6">
         <div className="flex h-14 items-center gap-4">
@@ -54,9 +81,24 @@ export default function Navbar() {
               {/* iOS-style unread dot. No notification source yet. */}
               <span className="absolute top-2 right-2.5 h-2 w-2 rounded-full bg-ios-red ring-2 ring-ios-surface" />
             </button>
-            <button type="button" className="ios-btn-primary px-4 py-1.5 text-[13px]">
-              LOG IN
-            </button>
+            {hasApiKey ? (
+              <button
+                type="button"
+                onClick={clearApiKey}
+                className="ios-btn-secondary px-4 py-1.5 text-[13px]"
+                title="Forget the API key from this browser tab"
+              >
+                <LogOut size={14} /> DISCONNECT
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowKeyDialog(true)}
+                className="ios-btn-primary px-4 py-1.5 text-[13px]"
+              >
+                <KeyRound size={14} /> API KEY
+              </button>
+            )}
           </div>
         </div>
 
@@ -82,5 +124,34 @@ export default function Navbar() {
         </nav>
       </div>
     </header>
+    {showKeyDialog && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 px-5 backdrop-blur-sm">
+        <form onSubmit={saveKey} className="ios-card w-full max-w-md p-6" role="dialog" aria-modal="true" aria-labelledby="api-key-title">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h2 id="api-key-title" className="text-xl font-bold text-ios-label">Connect API key</h2>
+              <p className="mt-1 text-sm text-ios-label-secondary">Used only for this browser tab.</p>
+            </div>
+            <button type="button" onClick={() => setShowKeyDialog(false)} aria-label="Close" className="flex h-9 w-9 items-center justify-center rounded-full hover:bg-ios-fill">
+              <X size={18} />
+            </button>
+          </div>
+          <label className="mt-5 block text-sm font-semibold text-ios-label" htmlFor="gateway-api-key">VishRouter API key</label>
+          <input
+            id="gateway-api-key"
+            type="password"
+            autoComplete="off"
+            value={draftKey}
+            onChange={(event) => setDraftKey(event.target.value)}
+            placeholder="vr_live_…"
+            className="ios-input mt-2 font-mono"
+            autoFocus
+          />
+          <p className="mt-2 text-xs text-ios-label-secondary">The key is kept in sessionStorage and is cleared when the tab session ends.</p>
+          <button type="submit" disabled={!draftKey.trim()} className="ios-btn-primary mt-5 w-full">Connect</button>
+        </form>
+      </div>
+    )}
+    </>
   )
 }

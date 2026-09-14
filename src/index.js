@@ -18,9 +18,17 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import express from 'express';
 
-import chatRouter, { sendError } from './routes/chat.js';
+import chatRouter from './routes/chat.js';
+import { sendError } from './http/errors.js';
+import {
+  createAuthMiddleware,
+  createRateLimitMiddleware,
+  createRequestContextMiddleware,
+  validateSecurityConfig,
+} from './middleware/security.js';
 import { loadConfig, listProviders, knownModels } from './services/router.js';
 import { getAdapter } from './services/adapters/index.js';
+import { UsageMeter } from './services/usage.js';
 
 dotenv.config({ quiet: true });
 
@@ -151,6 +159,12 @@ function healthHandler(req, res) {
     total_providers: providers.length,
     known_models: knownModels(config).length,
     fallback_order: config.fallbackOrder ?? [],
+    gateway_security: {
+      client_auth: req.app.locals.security.authMode,
+      configured_client_keys: req.app.locals.security.keys.size,
+      requests_per_minute: req.app.locals.security.rateLimit,
+      usage_persistence: 'memory',
+    },
     providers: providers.map((provider) => ({
       name: provider.name,
       available: provider.available,
@@ -165,7 +179,9 @@ function healthHandler(req, res) {
 function requestLogger(req, res, next) {
   const startedAt = Date.now();
   res.on('finish', () => {
-    log.debug(`${req.method} ${req.originalUrl} -> ${res.statusCode} (${Date.now() - startedAt}ms)`);
+    log.debug(
+      `${req.requestId} ${req.method} ${req.originalUrl} -> ${res.statusCode} (${Date.now() - startedAt}ms)`
+    );
   });
   next();
 }
@@ -192,6 +208,13 @@ function errorHandler(error, req, res, next) {
 
   // body-parser failures carry a `type`; surface them as proper 400/413s.
   if (error?.type === 'entity.parse.failed') {
+    if (req.auth?.keyId) {
+      req.app.locals.usageMeter.record({
+        keyId: req.auth.keyId,
+        ok: false,
+        durationMs: 0,
+      });
+    }
     return sendError(res, {
       status: 400,
       message: `Invalid JSON in request body: ${error.message}`,
@@ -200,6 +223,13 @@ function errorHandler(error, req, res, next) {
   }
 
   if (error?.type === 'entity.too.large') {
+    if (req.auth?.keyId) {
+      req.app.locals.usageMeter.record({
+        keyId: req.auth.keyId,
+        ok: false,
+        durationMs: 0,
+      });
+    }
     return sendError(res, {
       status: 413,
       message: 'Request body is too large.',
@@ -231,6 +261,10 @@ function allowedOrigins() {
 
 export function createApp() {
   const app = express();
+  const security = securityConfigForApp();
+
+  app.locals.usageMeter = new UsageMeter();
+  app.locals.security = security;
 
   app.disable('x-powered-by');
 
@@ -238,7 +272,7 @@ export function createApp() {
     cors({
       origin: allowedOrigins(),
       methods: ['GET', 'POST', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
       // Without this the browser hides our routing metadata from frontend JS —
       // the dashboard reads these to show which provider served a message.
       exposedHeaders: [
@@ -247,22 +281,46 @@ export function createApp() {
         'x-vishrouter-model-resolved-via',
         'x-vishrouter-fallback-used',
         'x-vishrouter-attempts',
+        'x-request-id',
+        'x-ratelimit-limit-requests',
+        'x-ratelimit-remaining-requests',
+        'x-ratelimit-reset-requests',
       ],
       maxAge: 86_400,
     })
   );
 
-  app.use(express.json({ limit: process.env.MAX_BODY_SIZE ?? '1mb' }));
+  app.use(createRequestContextMiddleware());
 
   if (threshold >= LEVELS.debug) app.use(requestLogger);
 
   app.get('/health', healthHandler);
+  const authenticate = createAuthMiddleware(security);
+  app.use('/v1/chat/completions', authenticate);
+  app.use('/v1/chat/completions',
+    createRateLimitMiddleware({ limit: security.rateLimit })
+  );
+  app.use('/v1/usage', authenticate);
+
+  // Authenticate before parsing potentially large request bodies.
+  app.use(express.json({ limit: process.env.MAX_BODY_SIZE ?? '1mb' }));
   app.use(chatRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);
 
   return app;
+}
+
+function securityConfigForApp() {
+  const { errors, warnings, ...config } = validateSecurityConfig();
+  if (errors.length > 0) {
+    const error = new Error(errors.join('; '));
+    error.code = 'invalid_security_config';
+    throw error;
+  }
+  void warnings;
+  return config;
 }
 
 // -------------------------------------------------------- graceful shutdown
@@ -338,11 +396,14 @@ export function start() {
   }
 
   const { errors, warnings } = validateStartupConfig(config);
+  const securityValidation = validateSecurityConfig();
+  errors.push(...securityValidation.errors);
+  warnings.push(...securityValidation.warnings);
   for (const warning of warnings) log.warn(warning);
 
   if (errors.length > 0) {
     for (const error of errors) log.error(error);
-    log.error('refusing to start — fix config/providers.json');
+    log.error('refusing to start — fix provider/security configuration');
     process.exit(1);
   }
 
@@ -367,7 +428,7 @@ export function start() {
         (config.fallbackOrder ?? []).join(' -> ')
       }`
     );
-    log.info('endpoints: POST /v1/chat/completions, GET /v1/models, GET /health');
+    log.info('endpoints: POST /v1/chat/completions, GET /v1/models, GET /v1/usage, GET /health');
   });
 
   server.on('error', (error) => {

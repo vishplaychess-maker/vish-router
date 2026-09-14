@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LIVE = process.argv.includes('--live');
+const CLIENT_API_KEY = 'vr_test_0123456789abcdef0123456789abcdef';
 
 // ------------------------------------------------------------ tiny reporter
 
@@ -210,7 +211,10 @@ async function spawnGateway(env = {}) {
 const postJson = (base, payload) =>
   fetch(`${base}/v1/chat/completions`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${CLIENT_API_KEY}`,
+    },
     body: typeof payload === 'string' ? payload : JSON.stringify(payload),
   });
 
@@ -293,6 +297,9 @@ async function offlineSuite() {
       OPENAI_API_KEY: 'smoke-openai',
       DEEPSEEK_API_KEY: 'smoke-deepseek',
       ANTHROPIC_API_KEY: 'smoke-anthropic',
+      VISHROUTER_AUTH_MODE: 'required',
+      VISHROUTER_API_KEYS: `smoke:${CLIENT_API_KEY}`,
+      RATE_LIMIT_REQUESTS_PER_MINUTE: '12',
     });
 
     section('Boot and discovery');
@@ -304,17 +311,43 @@ async function offlineSuite() {
     equal('health reports ok', health.status, 'ok');
     equal('all three providers available', health.available_providers, 3);
     equal('fallback order echoed by health', health.fallback_order, ['openai', 'deepseek', 'anthropic']);
+    equal('health reports required client auth', health.gateway_security.client_auth, 'required');
+    equal('health reports configured client keys without exposing them', health.gateway_security.configured_client_keys, 1);
 
     const models = await (await fetch(`${gateway.base}/v1/models`)).json();
     const modelIds = models.data.map((m) => m.id);
     check('models endpoint lists known models', modelIds.length >= 7, `got ${modelIds.length}`);
     check('models include a native id', modelIds.includes('gpt-4o-mini'), modelIds.join(', '));
 
+    section('Gateway security');
+    {
+      const missingKey = await fetch(`${gateway.base}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(message('gpt-4o-mini')),
+      });
+      const missingBody = await missingKey.json();
+      equal('missing client key is rejected', missingKey.status, 401);
+      equal('missing key uses stable error code', missingBody.error.code, 'invalid_api_key');
+
+      const invalidKey = await fetch(`${gateway.base}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer vr_invalid_0123456789abcdef0123456789',
+        },
+        body: JSON.stringify(message('gpt-4o-mini')),
+      });
+      equal('invalid client key is rejected', invalidKey.status, 401);
+    }
+
     section('Routing and equivalence');
     {
       const response = await ask(message('gpt-4o-mini'));
       const body = await response.json();
       equal('status', response.status, 200);
+      check('request id is returned', Boolean(response.headers.get('x-request-id')));
+      equal('rate limit is reported', response.headers.get('x-ratelimit-limit-requests'), '12');
       equal('served by the native provider', response.headers.get('x-vishrouter-provider'), 'openai');
       equal('no fallback used', response.headers.get('x-vishrouter-fallback-used'), 'false');
       equal('content', body.choices[0].message.content, 'Hello from OpenAI');
@@ -438,6 +471,26 @@ async function offlineSuite() {
       equal('stream still terminated cleanly', brokenFrames.at(-1), '[DONE]');
       mode.openai = 'ok';
     }
+
+    section('Usage and quota');
+    {
+      const usageResponse = await fetch(`${gateway.base}/v1/usage`, {
+        headers: { authorization: `Bearer ${CLIENT_API_KEY}` },
+      });
+      const usage = await usageResponse.json();
+      equal('usage endpoint is authenticated', usageResponse.status, 200);
+      equal('usage belongs to the calling key', usage.data.key_id, 'smoke');
+      equal('usage counts accepted requests', usage.data.requests, 12);
+      check('usage meters tokens', usage.data.total_tokens > 0, JSON.stringify(usage.data));
+      equal('usage storage is explicit', usage.data.persistence, 'memory');
+
+      const limited = await ask(message('gpt-4o-mini'));
+      const limitedBody = await limited.json();
+      equal('per-key request limit is enforced', limited.status, 429);
+      equal('rate-limit error code', limitedBody.error.code, 'rate_limit_exceeded');
+      equal('rate-limit remaining reaches zero', limited.headers.get('x-ratelimit-remaining-requests'), '0');
+      check('retry-after is returned', Number(limited.headers.get('retry-after')) > 0);
+    }
   } finally {
     if (gateway) {
       gateway.child.kill();
@@ -455,7 +508,12 @@ async function offlineSuite() {
 async function liveSuite() {
   console.log('\x1b[1mVishRouter live check — real providers from .env\x1b[0m');
 
-  const gateway = await spawnGateway({ PORT: '0', HOST: '127.0.0.1' });
+  const gateway = await spawnGateway({
+    PORT: '0',
+    HOST: '127.0.0.1',
+    VISHROUTER_AUTH_MODE: 'required',
+    VISHROUTER_API_KEYS: `live:${CLIENT_API_KEY}`,
+  });
 
   try {
     const health = await (await fetch(`${gateway.base}/health`)).json();
