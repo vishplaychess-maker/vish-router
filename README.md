@@ -14,7 +14,9 @@ client ──► POST /v1/chat/completions ──► router ──► openai    
 
 ```bash
 npm install
-cp .env.example .env      # then put at least one real API key in .env
+cp .env.example .env
+# Generate a client key: openssl rand -hex 32
+# Set VISHROUTER_API_KEYS=local:<generated-key> and at least one provider key
 npm start
 ```
 
@@ -32,6 +34,7 @@ npm run smoke:live        # test against the real providers you have keys for
 |---|---|---|
 | `POST` | `/v1/chat/completions` | Chat completion (streaming and non-streaming) |
 | `GET` | `/v1/models` | Models a client may request |
+| `GET` | `/v1/usage` | Usage summary for the authenticated key |
 | `GET` | `/health` | Liveness plus per-provider readiness |
 
 ### Request
@@ -50,6 +53,7 @@ npm run smoke:live        # test against the real providers you have keys for
 
 ```bash
 curl -s http://127.0.0.1:3000/v1/chat/completions \
+  -H 'authorization: Bearer YOUR_VISHROUTER_KEY' \
   -H 'content-type: application/json' \
   -d '{"model":"gpt-3.5-turbo","messages":[{"role":"user","content":"Hello"}]}'
 ```
@@ -58,6 +62,7 @@ curl -s http://127.0.0.1:3000/v1/chat/completions \
 
 ```bash
 curl -N http://127.0.0.1:3000/v1/chat/completions \
+  -H 'authorization: Bearer YOUR_VISHROUTER_KEY' \
   -H 'content-type: application/json' \
   -d '{"model":"gpt-3.5-turbo","messages":[{"role":"user","content":"Hello"}],"stream":true}'
 ```
@@ -74,7 +79,10 @@ gateway:
 ```js
 import OpenAI from 'openai';
 
-const client = new OpenAI({ baseURL: 'http://127.0.0.1:3000/v1', apiKey: 'unused' });
+const client = new OpenAI({
+  baseURL: 'http://127.0.0.1:3000/v1',
+  apiKey: process.env.VISHROUTER_API_KEY,
+});
 const stream = await client.chat.completions.create({
   model: 'gpt-3.5-turbo',
   messages: [{ role: 'user', content: 'Hello' }],
@@ -184,12 +192,14 @@ All failures use the OpenAI envelope, so SDKs surface them correctly:
 | Situation | Status | `code` |
 |---|---|---|
 | Validation failure | 400 | `invalid_request` |
+| Missing or invalid client key | 401 | `invalid_api_key` |
 | Malformed JSON body | 400 | `invalid_json` |
 | Body over `MAX_BODY_SIZE` | 413 | `payload_too_large` |
 | Unknown model | 404 | `model_not_found` |
 | Unknown endpoint | 404 | `unknown_endpoint` |
 | Every provider failed | last upstream status (e.g. 429) | `all_providers_failed` |
 | No provider available | 503 | `no_provider_available` |
+| Per-key quota exceeded | 429 | `rate_limit_exceeded` |
 
 ### Streaming failures
 
@@ -204,6 +214,9 @@ All failures use the OpenAI envelope, so SDKs surface them correctly:
 |---|---|---|
 | `PORT` | `3000` | Listen port |
 | `HOST` | `127.0.0.1` | Bind address (set `0.0.0.0` in containers) |
+| `VISHROUTER_AUTH_MODE` | `required` | `required` or local-only `disabled` |
+| `VISHROUTER_API_KEYS` | — | Client keys as `id:key,id2:key2` (minimum 24 characters) |
+| `RATE_LIMIT_REQUESTS_PER_MINUTE` | `60` | Per-key, per-process request limit; `0` disables |
 | `OPENAI_API_KEY` | — | Enables the OpenAI provider |
 | `ANTHROPIC_API_KEY` | — | Enables the Anthropic provider |
 | `DEEPSEEK_API_KEY` | — | Enables the DeepSeek provider |
@@ -254,6 +267,7 @@ amount of real credit.
 npm start
 curl -s http://127.0.0.1:3000/health | jq
 curl -s http://127.0.0.1:3000/v1/chat/completions \
+  -H "authorization: Bearer $VISHROUTER_API_KEY" \
   -H 'content-type: application/json' \
   -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"Say ok"}]}' | jq
 ```
@@ -263,8 +277,11 @@ curl -s http://127.0.0.1:3000/v1/chat/completions \
 ```
 src/
   index.js                    entry point: app, error handling, health, shutdown
-  routes/chat.js              POST /v1/chat/completions, GET /v1/models
+  http/errors.js              canonical OpenAI-shaped errors
+  middleware/security.js      client auth, request IDs, rate limiting
+  routes/chat.js              chat, models, and per-key usage endpoints
   services/router.js          model matching, equivalence, failover loop
+  services/usage.js           replaceable in-memory usage meter
   services/adapters/
     index.js                  adapter registry
     common.js                 ProviderError, retryability policy
@@ -287,4 +304,6 @@ test/smoke.mjs                end-to-end smoke test
   if the client did not ask for them.
 - **Retries are per-provider, not per-error**: each provider is attempted once per request, with no
   backoff. A `429` moves straight to the next provider rather than waiting.
-- **No response caching, auth, or rate limiting** — this is the routing core, not a full proxy.
+- **Single-process controls**: client authentication is configuration-backed, while rate-limit
+  buckets and usage totals reset on restart and are not shared across replicas. Durable Postgres
+  metering and distributed limits are the next production milestone.

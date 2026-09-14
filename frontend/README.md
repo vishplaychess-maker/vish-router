@@ -1,4 +1,25 @@
-# React + TypeScript + Vite
+# VishRouter Dashboard
+
+React + TypeScript + Vite dashboard for the VishRouter gateway.
+
+```bash
+npm install
+cp .env.example .env.local
+npm run dev
+```
+
+The model catalogue is public. Chat requests require a VishRouter client key; connect it with the
+**API KEY** button. The key is stored only in `sessionStorage` for the current browser tab and is
+sent as `Authorization: Bearer <key>`.
+
+Run the production checks with:
+
+```bash
+npm run lint
+npm run build
+```
+
+## Vite foundation
 
 This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
 

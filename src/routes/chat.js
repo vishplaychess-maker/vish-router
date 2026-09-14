@@ -12,6 +12,8 @@
 
 import express from 'express';
 import { once } from 'node:events';
+import { errorTypeFor, sendError } from '../http/errors.js';
+import { ProviderError } from '../services/adapters/index.js';
 import {
   routeChatCompletion,
   streamChatCompletion,
@@ -21,42 +23,25 @@ import {
 
 const router = express.Router();
 
-// ------------------------------------------------------------ error shapes
+export { errorTypeFor, sendError } from '../http/errors.js';
 
-const ERROR_TYPES = {
-  400: 'invalid_request_error',
-  401: 'invalid_request_error',
-  403: 'invalid_request_error',
-  404: 'invalid_request_error',
-  408: 'api_error',
-  429: 'rate_limit_error',
-  500: 'api_error',
-  501: 'api_error',
-  502: 'api_error',
-  503: 'api_error',
-  504: 'api_error',
-};
+// ---------------------------------------------------------- public error text
 
-export function errorTypeFor(status) {
-  if (ERROR_TYPES[status]) return ERROR_TYPES[status];
-  return status >= 500 ? 'api_error' : 'invalid_request_error';
-}
-
-/** The single place an OpenAI-shaped error envelope is produced. */
-export function sendError(res, { status = 500, message, type, param = null, code = null, extra = {} }) {
-  if (res.headersSent) {
-    res.end();
-    return;
+/**
+ * Only errors this gateway constructs itself may carry their message to a
+ * client. Anything else — a TypeError, a Node internal, a library error — is
+ * replaced with a generic message, so neither internal detail nor upstream
+ * text can escape through an unexpected failure.
+ *
+ * ProviderError messages are safe by construction: `adapters/common.js` builds
+ * them exclusively from the provider name, a normalized status and a normalized
+ * category, and never from an upstream body.
+ */
+function publicMessage(error, status) {
+  if (error instanceof ProviderError && typeof error.message === 'string' && error.message) {
+    return error.message;
   }
-  res.status(status).json({
-    error: {
-      message,
-      type: type ?? errorTypeFor(status),
-      param,
-      code,
-      ...extra,
-    },
-  });
+  return status >= 500 ? 'Internal server error.' : 'Request failed.';
 }
 
 // -------------------------------------------------------------- validation
@@ -179,8 +164,12 @@ function setStreamingHeaders(res) {
  * every provider returns a real 429/404/400 JSON error rather than a 200
  * stream carrying an error object.
  */
-async function handleStreaming(res, body) {
+async function handleStreaming(req, res, body) {
+  const startedAt = Date.now();
   const controller = new AbortController();
+  let meta = null;
+  let usage = null;
+  let recorded = false;
   const onResponseClose = () => {
     if (!res.writableFinished) controller.abort(new Error('client disconnected'));
   };
@@ -191,7 +180,7 @@ async function handleStreaming(res, body) {
       // Routing metadata always arrives before the first chunk, so the
       // response is still uncommitted when these headers are set.
       if (event.type === 'meta') {
-        const { meta } = event;
+        meta = { ...event.meta, requestId: req.requestId };
         setStreamingHeaders(res);
         res.setHeader('x-vishrouter-provider', meta.provider);
         res.setHeader('x-vishrouter-upstream-model', meta.upstreamModel);
@@ -205,6 +194,7 @@ async function handleStreaming(res, body) {
         // Defensive: a chunk should never precede its meta event.
         if (!res.headersSent) setStreamingHeaders(res);
         await writeFrame(res, event.chunk);
+        if (event.chunk?.usage) usage = event.chunk.usage;
       }
     }
 
@@ -212,7 +202,27 @@ async function handleStreaming(res, body) {
     // still gets exactly one [DONE] regardless of provider dialect.
     await writeFrame(res, DONE_FRAME);
     res.end();
+    req.app.locals.usageMeter.record({
+      keyId: req.auth.keyId,
+      ok: true,
+      model: body.model,
+      provider: meta?.provider,
+      promptTokens: usage?.prompt_tokens,
+      completionTokens: usage?.completion_tokens,
+      durationMs: Date.now() - startedAt,
+      fallbackUsed: meta?.fallbackUsed,
+    });
+    recorded = true;
   } catch (error) {
+    req.app.locals.usageMeter.record({
+      keyId: req.auth.keyId,
+      ok: false,
+      model: body.model,
+      provider: meta?.provider,
+      durationMs: Date.now() - startedAt,
+      fallbackUsed: meta?.fallbackUsed,
+    });
+    recorded = true;
     // Client already gone — there is no stream left to write to.
     if (res.destroyed || res.writableEnded) return;
 
@@ -222,7 +232,7 @@ async function handleStreaming(res, body) {
       if (error.attempts) extra.provider_attempts = error.attempts;
       sendError(res, {
         status: error.status ?? 502,
-        message: error.message,
+        message: publicMessage(error, error.status ?? 502),
         code: error.code ?? null,
         extra,
       });
@@ -235,9 +245,11 @@ async function handleStreaming(res, body) {
     res.write(
       `data: ${JSON.stringify({
         error: {
-          message: error.message,
+          // Stable and generic: once bytes are on the wire the client cannot be
+          // failed over, and no upstream detail may be attached to the frame.
+          message: 'The upstream stream failed before it completed.',
           type: errorTypeFor(error.status ?? 502),
-          code: error.code ?? 'upstream_stream_error',
+          code: 'upstream_stream_error',
           param: null,
         },
       })}\n\n`
@@ -245,6 +257,16 @@ async function handleStreaming(res, body) {
     res.write(DONE_FRAME);
     res.end();
   } finally {
+    if (!recorded && !res.writableFinished) {
+      req.app.locals.usageMeter.record({
+        keyId: req.auth.keyId,
+        ok: false,
+        model: body.model,
+        provider: meta?.provider,
+        durationMs: Date.now() - startedAt,
+        fallbackUsed: meta?.fallbackUsed,
+      });
+    }
     res.off('close', onResponseClose);
   }
 }
@@ -253,11 +275,18 @@ async function handleStreaming(res, body) {
 
 router.post('/v1/chat/completions', async (req, res) => {
   const body = req.body ?? {};
+  const startedAt = Date.now();
 
   // 1. Validate before touching any provider.
   const validationErrors = validateChatRequest(body);
   if (validationErrors.length > 0) {
     const [first, ...rest] = validationErrors;
+    req.app.locals.usageMeter.record({
+      keyId: req.auth.keyId,
+      ok: false,
+      model: typeof body.model === 'string' ? body.model : null,
+      durationMs: Date.now() - startedAt,
+    });
     return sendError(res, {
       status: 400,
       message: first.message,
@@ -269,7 +298,7 @@ router.post('/v1/chat/completions', async (req, res) => {
 
   // 2. Streaming clients take the SSE path.
   if (body.stream === true) {
-    return handleStreaming(res, body);
+    return handleStreaming(req, res, body);
   }
 
   // 3. Abort the upstream call if the client goes away.
@@ -286,7 +315,8 @@ router.post('/v1/chat/completions', async (req, res) => {
   res.on('close', onResponseClose);
 
   try {
-    const { response, meta } = await routeChatCompletion({ body, signal: controller.signal });
+    const { response, meta: routerMeta } = await routeChatCompletion({ body, signal: controller.signal });
+    const meta = { ...routerMeta, requestId: req.requestId };
 
     res.setHeader('x-vishrouter-provider', meta.provider);
     res.setHeader('x-vishrouter-upstream-model', meta.upstreamModel);
@@ -295,6 +325,16 @@ router.post('/v1/chat/completions', async (req, res) => {
     res.setHeader('x-vishrouter-attempts', String(meta.attemptCount));
 
     res.json({ ...response, x_vishrouter: meta });
+    req.app.locals.usageMeter.record({
+      keyId: req.auth.keyId,
+      ok: true,
+      model: body.model,
+      provider: meta.provider,
+      promptTokens: response.usage?.prompt_tokens,
+      completionTokens: response.usage?.completion_tokens,
+      durationMs: Date.now() - startedAt,
+      fallbackUsed: meta.fallbackUsed,
+    });
   } catch (error) {
     // Router errors already carry a status and a stable `code`; anything
     // unexpected degrades to a 502 rather than leaking a stack trace.
@@ -304,13 +344,26 @@ router.post('/v1/chat/completions', async (req, res) => {
 
     sendError(res, {
       status: error.status ?? 502,
-      message: error.message,
+      message: publicMessage(error, error.status ?? 502),
       code: error.code ?? null,
       extra,
+    });
+    req.app.locals.usageMeter.record({
+      keyId: req.auth.keyId,
+      ok: false,
+      model: body.model,
+      durationMs: Date.now() - startedAt,
     });
   } finally {
     res.off('close', onResponseClose);
   }
+});
+
+router.get('/v1/usage', (req, res) => {
+  res.json({
+    object: 'usage.summary',
+    data: req.app.locals.usageMeter.snapshot(req.auth.keyId),
+  });
 });
 
 router.get('/v1/models', (req, res) => {

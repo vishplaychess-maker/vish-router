@@ -1,4 +1,5 @@
 import { API_BASE_URL, ROUTING_HEADERS } from './config'
+import { getApiKey } from './apiKey'
 
 export type Role = 'system' | 'user' | 'assistant'
 
@@ -90,9 +91,14 @@ export async function sendChat({
 
   let response: Response
   try {
+    const apiKey = getApiKey()
     response = await fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json',
+        ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+      },
       body: JSON.stringify({
         model,
         messages: messages.map(({ role, content }) => ({ role, content })),

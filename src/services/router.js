@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 import { getAdapter, ProviderError } from './adapters/index.js';
 import {
+  UPSTREAM_CODES,
   providerErrorFromNetwork,
   providerErrorFromResponse,
   nowSeconds,
@@ -281,7 +282,6 @@ async function callProvider({ candidate, body, signal, config }) {
     throw providerErrorFromResponse({
       provider: candidate.name,
       status: response.status,
-      bodyText: text,
       fallbackOn: config.defaults?.fallbackOn,
     });
   }
@@ -290,11 +290,11 @@ async function callProvider({ candidate, body, signal, config }) {
   try {
     json = JSON.parse(text);
   } catch {
-    throw new ProviderError(`${candidate.name}: upstream returned a non-JSON body`, {
+    throw new ProviderError(`${candidate.name} upstream returned a non-JSON body.`, {
       provider: candidate.name,
       status: response.status,
+      code: UPSTREAM_CODES.INVALID_RESPONSE,
       retryable: true,
-      upstream: text.slice(0, 500),
     });
   }
 
@@ -341,11 +341,12 @@ async function openStream({ candidate, body, signal, config }) {
   }
 
   if (!response.ok) {
-    const text = await response.text().catch(() => '');
+    // Drain the body so the socket can be reused, but never inspect or keep it:
+    // upstream text must not reach an error object that a client can read.
+    await response.text().catch(() => '');
     throw providerErrorFromResponse({
       provider: candidate.name,
       status: response.status,
-      bodyText: text,
       fallbackOn: config.defaults?.fallbackOn,
     });
   }
@@ -449,12 +450,32 @@ function attachAttempts(error, attempts) {
   return error;
 }
 
+/**
+ * The public shape of one provider attempt.
+ *
+ * This object reaches clients — inside `x_vishrouter.attempts` on success and
+ * `provider_attempts` on failure — so it may carry only facts VishRouter
+ * derives itself. There is deliberately no free-text error field: a previous
+ * revision stored `error.message` here, which carried upstream-supplied text
+ * into every fallback response.
+ */
+function publicAttempt({ provider, error = null, durationMs }) {
+  if (!error) return { provider, ok: true, durationMs };
+  return {
+    provider,
+    ok: false,
+    status: error.status ?? null,
+    code: error.code ?? UPSTREAM_CODES.UNKNOWN,
+    retryable: Boolean(error.retryable),
+    durationMs,
+  };
+}
+
 function buildExhaustedError({ requestedModel, attempts, lastError }) {
-  const summary = attempts
-    .map((attempt) => `${attempt.provider}: ${attempt.error ?? 'failed'}`)
-    .join(' | ');
+  // Stable and client-safe: the model name is caller-supplied, and nothing
+  // from the failed attempts is echoed into the message.
   const error = new ProviderError(
-    `all providers failed for model "${requestedModel}" — ${summary || 'no providers available'}`,
+    `All ${attempts.length} provider attempt(s) failed for model "${requestedModel}".`,
     { provider: null, status: lastError?.status ?? 502, retryable: false }
   );
   error.code = 'all_providers_failed';
@@ -479,21 +500,16 @@ export async function routeChatCompletion({ body, signal, config = loadConfig() 
     const startedAt = Date.now();
     try {
       const response = await callProvider({ candidate, body, signal, config });
-      attempts.push({ provider: candidate.name, ok: true, durationMs: Date.now() - startedAt });
+      attempts.push(publicAttempt({ provider: candidate.name, durationMs: Date.now() - startedAt }));
 
       return {
         response,
         meta: buildMeta({ requestedModel, candidate, attempts, chain: candidates, skipped, primary, stream: false }),
       };
     } catch (error) {
-      attempts.push({
-        provider: candidate.name,
-        ok: false,
-        status: error.status ?? null,
-        error: error.message,
-        retryable: Boolean(error.retryable),
-        durationMs: Date.now() - startedAt,
-      });
+      attempts.push(
+        publicAttempt({ provider: candidate.name, error, durationMs: Date.now() - startedAt })
+      );
       lastError = error;
 
       // A client error (e.g. 400 malformed request) will fail everywhere;
@@ -529,20 +545,15 @@ export async function* streamChatCompletion({ body, signal, config = loadConfig(
     try {
       upstream = await openStream({ candidate, body, signal, config });
     } catch (error) {
-      attempts.push({
-        provider: candidate.name,
-        ok: false,
-        status: error.status ?? null,
-        error: error.message,
-        retryable: Boolean(error.retryable),
-        durationMs: Date.now() - startedAt,
-      });
+      attempts.push(
+        publicAttempt({ provider: candidate.name, error, durationMs: Date.now() - startedAt })
+      );
       lastError = error;
       if (!error.retryable) throw attachAttempts(error, attempts);
       continue;
     }
 
-    attempts.push({ provider: candidate.name, ok: true, durationMs: Date.now() - startedAt });
+    attempts.push(publicAttempt({ provider: candidate.name, durationMs: Date.now() - startedAt }));
     yield {
       type: 'meta',
       meta: buildMeta({ requestedModel, candidate, attempts, chain: candidates, skipped, primary, stream: true }),
@@ -577,8 +588,9 @@ export async function* streamChatCompletion({ body, signal, config = loadConfig(
       const wrapped =
         error instanceof ProviderError
           ? error
-          : new ProviderError(`${candidate.name}: stream aborted — ${error.message}`, {
+          : new ProviderError(`${candidate.name} upstream stream ended unexpectedly.`, {
               provider: candidate.name,
+              code: UPSTREAM_CODES.STREAM_ERROR,
               retryable: false,
               cause: error,
             });
