@@ -65,7 +65,7 @@ export default function NotificationBell() {
         type="button"
         onClick={toggle}
         aria-label={showBadge ? `Notifications, ${unreadCount} unread` : 'Notifications'}
-        aria-haspopup="menu"
+        aria-haspopup="dialog"
         aria-expanded={open}
         className="relative flex h-9 w-9 cursor-pointer items-center justify-center rounded-full text-ios-label-secondary transition-colors hover:bg-ios-fill hover:text-ios-label"
       >
@@ -77,7 +77,7 @@ export default function NotificationBell() {
 
       {open && (
         <div
-          role="menu"
+          role="dialog"
           aria-label="Notifications"
           // Below `md` the panel is anchored to the viewport instead of the bell:
           // the bell sits near the right edge on a phone, so a 320px panel

@@ -1,7 +1,7 @@
 # VishRouter Product Requirements Document
 
-**Version:** 2.0  
-**Status:** MVP feature-complete; production hardening in progress  
+**Version:** 2.0
+**Status:** MVP feature-complete; production hardening in progress
 **Product:** Provider-neutral AI inference gateway and control plane
 
 ## 1. Vision
@@ -105,6 +105,7 @@ Implemented and verified:
 - Stable request IDs.
 - Per-key in-memory usage summaries.
 - React dashboard with model library, chat, rankings, pricing, and docs.
+- Mock dashboard account UI, separate from gateway authentication.
 - Session-only dashboard API-key connection.
 - Offline end-to-end smoke suite and frontend CI checks.
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, NavLink } from 'react-router-dom'
 import { KeyRound, LogOut, RotateCw, X } from 'lucide-react'
 
@@ -34,6 +34,23 @@ function navLinkClasses({ isActive }: { isActive: boolean }): string {
 
 function ApiKeyModal({ onClose }: { onClose: () => void }) {
   const [draftKey, setDraftKey] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    inputRef.current?.focus()
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      document.body.style.overflow = previousOverflow
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [onClose])
 
   const saveKey = (event: FormEvent) => {
     event.preventDefault()
@@ -44,11 +61,10 @@ function ApiKeyModal({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center px-5">
-      <button
-        type="button"
-        aria-label="Close API key dialog"
+      <div
+        aria-hidden="true"
         onClick={onClose}
-        className="absolute inset-0 cursor-default bg-black/25 backdrop-blur-sm"
+        className="absolute inset-0 bg-black/25 backdrop-blur-sm"
       />
       <form
         onSubmit={saveKey}
@@ -77,6 +93,7 @@ function ApiKeyModal({ onClose }: { onClose: () => void }) {
           VishRouter API key
         </label>
         <input
+          ref={inputRef}
           id="gateway-api-key"
           type="password"
           autoComplete="off"
@@ -84,7 +101,6 @@ function ApiKeyModal({ onClose }: { onClose: () => void }) {
           onChange={(event) => setDraftKey(event.target.value)}
           placeholder="vr_live_…"
           className="ios-input mt-2 font-mono"
-          autoFocus
         />
         <p className="mt-2 text-xs text-ios-label-secondary">
           The key is kept in sessionStorage and is cleared when the tab session ends.
